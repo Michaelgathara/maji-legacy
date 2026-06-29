@@ -56,6 +56,7 @@ import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
+import { routePromptToSession } from "../../session-router"
 
 export type PromptProps = {
   sessionID?: string
@@ -922,6 +923,37 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  function routingProfiles() {
+    return Object.fromEntries(
+      sync.data.session.map((session) => [
+        session.id,
+        {
+          text: (sync.data.message[session.id] ?? [])
+            .slice(-8)
+            .flatMap((message) =>
+              (sync.data.part[message.id] ?? []).flatMap((part) => {
+                if (part.type === "text" && !part.synthetic && !part.ignored) return [part.text]
+                if (part.type === "file") {
+                  return [part.filename, part.source && "path" in part.source ? part.source.path : undefined].filter(
+                    Boolean,
+                  )
+                }
+                if (part.type === "tool") {
+                  return [
+                    part.tool,
+                    "title" in part.state ? part.state.title : undefined,
+                    "input" in part.state ? JSON.stringify(part.state.input ?? {}) : undefined,
+                  ].filter(Boolean)
+                }
+                return []
+              }),
+            )
+            .join("\n"),
+        },
+      ]),
+    )
+  }
+
   let submitting = false
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
@@ -982,8 +1014,45 @@ export function Prompt(props: PromptProps) {
     }
 
     const variant = local.model.variant.current()
+    const inputText = expandTrackedPastedText(
+      store.prompt.input,
+      input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
+        const partIndex = store.extmarkToPartIndex.get(extmark.id)
+        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
+        if (part?.type !== "text") return []
+        return [{ start: extmark.start, end: extmark.end, text: part.text }]
+      }),
+    )
+
+    // Filter out text parts (pasted content) since they're now expanded inline
+    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
+
+    // Capture mode before it gets reset
+    const currentMode = store.mode
     let sessionID = props.sessionID
     let finishMoveProgress = false
+    if (sessionID == null) {
+      const routing =
+        currentMode === "normal" && !inputText.startsWith("/") && !move.pendingNew()
+          ? routePromptToSession({
+              prompt: inputText,
+              sessions: sync.data.session,
+              statuses: sync.data.session_status,
+              permissions: sync.data.permission,
+              questions: sync.data.question,
+              profiles: routingProfiles(),
+              directory: sync.path.directory || paths.cwd,
+            })
+          : undefined
+      if (routing) {
+        sessionID = routing.sessionID
+        toast.show({
+          message: `Routed to ${Locale.truncate(routing.title, 36)} (${routing.reason})`,
+          variant: "success",
+          duration: 2500,
+        })
+      }
+    }
     if (sessionID == null) {
       const selectedWorkspace = workspace.selection()
       const workspaceID = selectedWorkspace?.type === "existing" ? selectedWorkspace.workspaceID : undefined
@@ -1017,22 +1086,6 @@ export function Prompt(props: PromptProps) {
 
       sessionID = res.data.id
     }
-
-    const inputText = expandTrackedPastedText(
-      store.prompt.input,
-      input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
-        const partIndex = store.extmarkToPartIndex.get(extmark.id)
-        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
-        if (part?.type !== "text") return []
-        return [{ start: extmark.start, end: extmark.end, text: part.text }]
-      }),
-    )
-
-    // Filter out text parts (pasted content) since they're now expanded inline
-    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
-
-    // Capture mode before it gets reset
-    const currentMode = store.mode
     const editorSelection = editorContext()
     const editorParts =
       editorSelection && editor.labelState() === "pending"

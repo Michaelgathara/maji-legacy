@@ -1,5 +1,5 @@
 import { Prompt, type PromptRef } from "../component/prompt"
-import { createEffect, createMemo, createSignal, onMount } from "solid-js"
+import { createEffect, createMemo, createSignal, onMount, Show } from "solid-js"
 import { Logo } from "../component/logo"
 import { useSync } from "../context/sync"
 import { Toast } from "../ui/toast"
@@ -12,8 +12,10 @@ import { useEditorContext } from "../context/editor"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTuiConfig } from "../config"
 import { HomeSessionDestinationProvider } from "./home/session-destination"
+import { HomeAttentionRail } from "./home/attention-rail"
 
 let once = false
+const hydratedHomeSessions = new Set<string>()
 const placeholder = {
   normal: ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"],
   shell: ["ls -la", "git status", "pwd"],
@@ -35,6 +37,7 @@ export function Home() {
     if (configured === "auto") return Math.max(75, Math.floor(dimensions().width * 0.7))
     return configured ?? 75
   })
+  const showAttentionRail = createMemo(() => dimensions().width >= 120)
   let sent = false
 
   onMount(() => {
@@ -67,25 +70,42 @@ export function Home() {
     r.submit()
   })
 
+  createEffect(() => {
+    if (!sync.ready) return
+    for (const session of sync.data.session
+      .filter((session) => !session.parentID && !session.time.archived)
+      .toSorted((a, b) => b.time.updated - a.time.updated)
+      .slice(0, 8)) {
+      if (hydratedHomeSessions.has(session.id)) continue
+      hydratedHomeSessions.add(session.id)
+      void sync.session.sync(session.id).catch(() => hydratedHomeSessions.delete(session.id))
+    }
+  })
+
   return (
     <HomeSessionDestinationProvider>
-      <box flexGrow={1} alignItems="center" paddingLeft={2} paddingRight={2}>
-        <box flexGrow={1} minHeight={0} />
-        <box height={4} minHeight={0} flexShrink={1} />
-        <box flexShrink={0}>
-          <pluginRuntime.Slot name="home_logo" mode="replace">
-            <Logo />
-          </pluginRuntime.Slot>
+      <box flexGrow={1} flexDirection="row" minHeight={0}>
+        <box flexGrow={1} alignItems="center" paddingLeft={2} paddingRight={2} minWidth={0}>
+          <box flexGrow={1} minHeight={0} />
+          <box height={4} minHeight={0} flexShrink={1} />
+          <box flexShrink={0}>
+            <pluginRuntime.Slot name="home_logo" mode="replace">
+              <Logo />
+            </pluginRuntime.Slot>
+          </box>
+          <box height={1} minHeight={0} flexShrink={1} />
+          <box width="100%" maxWidth={promptMaxWidth()} zIndex={1000} paddingTop={1} flexShrink={0}>
+            <pluginRuntime.Slot name="home_prompt" mode="replace" ref={bind}>
+              <Prompt ref={bind} right={<pluginRuntime.Slot name="home_prompt_right" />} placeholders={placeholder} />
+            </pluginRuntime.Slot>
+          </box>
+          <pluginRuntime.Slot name="home_bottom" />
+          <box flexGrow={1} minHeight={0} />
+          <Toast />
         </box>
-        <box height={1} minHeight={0} flexShrink={1} />
-        <box width="100%" maxWidth={promptMaxWidth()} zIndex={1000} paddingTop={1} flexShrink={0}>
-          <pluginRuntime.Slot name="home_prompt" mode="replace" ref={bind}>
-            <Prompt ref={bind} right={<pluginRuntime.Slot name="home_prompt_right" />} placeholders={placeholder} />
-          </pluginRuntime.Slot>
-        </box>
-        <pluginRuntime.Slot name="home_bottom" />
-        <box flexGrow={1} minHeight={0} />
-        <Toast />
+        <Show when={showAttentionRail()}>
+          <HomeAttentionRail />
+        </Show>
       </box>
       <box width="100%" flexShrink={0}>
         <pluginRuntime.Slot name="home_footer" mode="single_winner" />
